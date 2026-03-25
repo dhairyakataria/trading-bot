@@ -1,0 +1,173 @@
+# =============================================================================
+# Trading Bot — Configuration
+# =============================================================================
+# All secrets MUST be set as environment variables (see .env.example).
+# Reference them here with the ${VAR_NAME} syntax — never hardcode values.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Broker — Angel One SmartAPI
+# -----------------------------------------------------------------------------
+broker:
+  angel_one:
+    client_id: "${ANGEL_ONE_CLIENT_ID}"
+    api_key: "${ANGEL_ONE_API_KEY}"
+    password: "${ANGEL_ONE_PASSWORD}"
+    totp_secret: "${ANGEL_ONE_TOTP_SECRET}"
+    # Exchange to default to for equity orders
+    default_exchange: "NSE"
+
+# -----------------------------------------------------------------------------
+# Trading parameters
+# -----------------------------------------------------------------------------
+trading:
+  # Total capital allocated to the bot (INR)
+  capital: 50000
+
+  # Maximum size of a single position as % of capital
+  max_position_pct: 5
+
+  # Maximum allowable loss in a single day as % of capital
+  max_daily_loss_pct: 2
+
+  # Maximum allowable loss in a single week as % of capital
+  max_weekly_loss_pct: 5
+
+  # Maximum number of concurrent open positions
+  max_open_positions: 5
+
+  # Default stop-loss distance as % below entry price
+  stop_loss_pct: 3
+
+  # Price filters for stock selection (INR)
+  min_stock_price: 50
+  max_stock_price: 5000
+
+  # Minimum average daily trading volume (in crores INR)
+  min_volume_cr: 10
+
+  # NSE market hours (IST, 24h format)
+  trading_start_time: "09:30"
+  trading_end_time: "15:15"
+
+  # Paper-trading mode — set to true to disable live order placement
+  paper_trading: true
+
+  # Signal-only mode — when true, no orders are placed on Angel One.
+  # Instead, trade signals (symbol, qty, entry, SL, target) are sent to
+  # your Telegram bot so you can act on them manually.
+  # Works independently of paper_trading: you can use signal_only even in
+  # live mode to get advisory alerts without any automated order placement.
+  signal_only: false
+
+# -----------------------------------------------------------------------------
+# LLM providers
+# -----------------------------------------------------------------------------
+llm:
+  # Priority order for routing (first has highest priority)
+  provider_priority:
+    - "gemini"
+    - "groq"
+    - "ollama"
+    - "nvidia"
+
+  gemini:
+    model: "gemini-1.5-flash"
+    api_key: "${GEMINI_API_KEY}"
+    # Free-tier daily request limit
+    daily_limit: 1500
+    # Requests per minute limit
+    rpm_limit: 15
+
+  groq:
+    model: "llama-3.1-70b-versatile"
+    api_key: "${GROQ_API_KEY}"
+    daily_limit: 14400
+    rpm_limit: 30
+
+  nvidia:
+    model: "meta/llama-3.1-70b-instruct"
+    api_key: "${NVIDIA_API_KEY}"
+    base_url: "https://integrate.api.nvidia.com/v1"
+    daily_limit: 5000
+    rpm_limit: 50
+
+  ollama:
+    model: "llama3.1:8b"
+    base_url: "http://localhost:11434"
+    # Effectively unlimited for local models
+    daily_limit: 999999
+    rpm_limit: 999
+
+# -----------------------------------------------------------------------------
+# External APIs
+# -----------------------------------------------------------------------------
+apis:
+  tavily:
+    api_key: "${TAVILY_API_KEY}"
+    max_results: 5
+    search_depth: "advanced"
+
+  newsapi:
+    api_key: "${NEWSAPI_API_KEY}"
+    max_results: 10
+    language: "en"
+
+  serpapi:
+    api_key: "${SERPAPI_API_KEY}"
+    max_results: 5
+
+# -----------------------------------------------------------------------------
+# Notifications — Telegram
+# -----------------------------------------------------------------------------
+notifications:
+  telegram:
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"
+    enabled: true
+    # Minimum severity level to send: DEBUG | INFO | WARNING | ERROR
+    min_level: "INFO"
+
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+database:
+  sqlite:
+    path: "data/trading_bot.db"
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  level: "INFO"
+  file: "logs/trading_bot.log"
+
+# -----------------------------------------------------------------------------
+# Stock Universe
+# -----------------------------------------------------------------------------
+universe:
+  # Indices whose constituents form the initial stock pool
+  indices:
+    - "NIFTY_50"
+    - "NIFTY_NEXT_50"
+    - "NIFTY_MIDCAP_SELECT"
+
+  # Symbols to exclude from trading regardless of signals
+  blacklisted_stocks: []
+
+  # Optional cap on exposure per sector (sector_name: max_positions)
+  # Example:  IT: 2
+  sector_limits: {}
+
+# -----------------------------------------------------------------------------
+# Schedule (IST, 24h format)
+# -----------------------------------------------------------------------------
+schedule:
+  # Pre-market tasks: news pull, universe refresh
+  pre_market: "08:00"
+
+  # How often (minutes) to run the intra-day scan during market hours
+  scan_interval_minutes: 60
+
+  # Post-market tasks: reconciliation, journaling, daily report
+  post_market: "15:45"

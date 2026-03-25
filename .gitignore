@@ -1,0 +1,98 @@
+# =============================================================================
+# Git Ignore — Trading Bot
+# =============================================================================
+
+# --- Secrets & environment variables ---
+.env
+*.env
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+.installed.cfg
+MANIFEST
+.Python
+
+# --- Virtual environments ---
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# --- Testing & coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+nosetests.xml
+test-results/
+
+# --- Type checkers & linters ---
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# --- Database files ---
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+# Keep the placeholder so git tracks the directory
+!data/.gitkeep
+
+# --- Log files ---
+logs/
+!logs/.gitkeep
+
+# --- IDE & editor ---
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# --- Project-specific runtime artefacts ---
+# ChromaDB vector stores (any subfolder name)
+data/chroma/
+data/chroma_db/
+data/journal_check_chroma/
+data/*_chroma/
+# Backtest results
+data/backtest_results/
+# Downloaded market data cache
+data/cache/
