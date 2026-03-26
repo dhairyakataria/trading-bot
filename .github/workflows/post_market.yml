@@ -1,0 +1,123 @@
+# =============================================================================
+# Post-Market + Weekly Routines
+#
+# End-of-day  : 15:45 IST = 10:15 UTC, Mon–Fri
+# Weekly review: Saturday 10:00 IST = 04:30 UTC
+# Universe refresh: Sunday 20:00 IST = 14:30 UTC
+# Daily reset  : Midnight IST = 18:30 UTC (previous day)
+# =============================================================================
+name: Post-Market & Weekly
+
+on:
+  schedule:
+    - cron: "15 10 * * 1-5"   # 15:45 IST — end-of-day routine
+    - cron: "30 4  * * 6"     # Saturday 10:00 IST — weekly review
+    - cron: "30 14 * * 0"     # Sunday 20:00 IST — universe refresh
+    - cron: "30 18 * * *"     # Midnight IST — daily state reset
+  workflow_dispatch:
+    inputs:
+      routine:
+        description: "Which routine to run"
+        required: true
+        default: "eod"
+        type: choice
+        options:
+          - eod
+          - weekly_review
+          - universe_refresh
+          - daily_reset
+
+jobs:
+  post-market:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore DB cache
+        uses: actions/cache@v4
+        with:
+          path: data/trading_bot.db
+          key: trading-db-${{ runner.os }}
+          restore-keys: trading-db-
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create .env
+        run: |
+          cat > .env << EOF
+          ANGEL_ONE_CLIENT_ID=${{ secrets.ANGEL_ONE_CLIENT_ID }}
+          ANGEL_ONE_API_KEY=${{ secrets.ANGEL_ONE_API_KEY }}
+          ANGEL_ONE_PASSWORD=${{ secrets.ANGEL_ONE_PASSWORD }}
+          ANGEL_ONE_TOTP_SECRET=${{ secrets.ANGEL_ONE_TOTP_SECRET }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY=${{ secrets.NVIDIA_API_KEY }}
+          TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}
+          NEWSAPI_API_KEY=${{ secrets.NEWSAPI_API_KEY }}
+          SERPAPI_API_KEY=${{ secrets.SERPAPI_API_KEY }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          EOF
+
+      # Determine which routine to run based on cron trigger time (UTC hour)
+      - name: Run appropriate routine
+        run: |
+          python -c "
+          import sys
+          from datetime import datetime, timezone
+          from src.utils.config import get_config
+          from src.utils.logger import setup_logging
+          setup_logging()
+          from src.agents.orchestrator import Orchestrator
+
+          o = Orchestrator(get_config())
+          utc_hour = datetime.now(timezone.utc).hour
+          utc_min  = datetime.now(timezone.utc).minute
+          utc_dow  = datetime.now(timezone.utc).weekday()  # 0=Mon, 6=Sun
+
+          routine = '${ROUTINE}'   # from workflow_dispatch input (empty if cron)
+
+          if routine == 'weekly_review' or (utc_dow == 5 and utc_hour == 4):
+              print('Running weekly review...')
+              result = o.run_weekly_review()
+          elif routine == 'universe_refresh' or (utc_dow == 6 and utc_hour == 14):
+              print('Running universe refresh...')
+              result = o.refresh_universe()
+          elif routine == 'daily_reset' or utc_hour == 18:
+              print('Running daily reset...')
+              result = o.reset_daily_state()
+          else:
+              print('Running end-of-day routine...')
+              result = o.run_eod_routine()
+
+          print('Result:', result)
+          o.shutdown()
+          "
+        env:
+          ROUTINE: ${{ github.event.inputs.routine || '' }}
+
+      - name: Save DB cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/trading_bot.db
+          key: trading-db-${{ runner.os }}-${{ github.run_id }}
+
+      # Keep a weekly DB backup as a downloadable artifact
+      - name: Upload weekly DB backup
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: db-backup-${{ github.run_number }}-${{ github.run_id }}
+          path: data/trading_bot.db
+          retention-days: 30

@@ -1,0 +1,96 @@
+# =============================================================================
+# Main Trading Cycle — runs every hour during NSE market hours (IST)
+#
+# IST → UTC conversion (IST = UTC + 5:30):
+#   09:30 IST = 04:00 UTC
+#   10:30 IST = 05:00 UTC
+#   11:30 IST = 06:00 UTC
+#   12:30 IST = 07:00 UTC
+#   13:30 IST = 08:00 UTC
+#   14:30 IST = 09:00 UTC
+#   15:00 IST = 09:30 UTC  (final cycle before close)
+# =============================================================================
+name: Trading Cycle
+
+on:
+  schedule:
+    - cron: "0 4 * * 1-5"    # 09:30 IST
+    - cron: "0 5 * * 1-5"    # 10:30 IST
+    - cron: "0 6 * * 1-5"    # 11:30 IST
+    - cron: "0 7 * * 1-5"    # 12:30 IST
+    - cron: "0 8 * * 1-5"    # 13:30 IST
+    - cron: "0 9 * * 1-5"    # 14:30 IST
+    - cron: "30 9 * * 1-5"   # 15:00 IST — final cycle
+  workflow_dispatch:
+
+jobs:
+  trading-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Restore the latest DB snapshot
+      - name: Restore DB cache
+        uses: actions/cache@v4
+        with:
+          path: data/trading_bot.db
+          key: trading-db-${{ runner.os }}
+          restore-keys: trading-db-
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create .env
+        run: |
+          cat > .env << EOF
+          ANGEL_ONE_CLIENT_ID=${{ secrets.ANGEL_ONE_CLIENT_ID }}
+          ANGEL_ONE_API_KEY=${{ secrets.ANGEL_ONE_API_KEY }}
+          ANGEL_ONE_PASSWORD=${{ secrets.ANGEL_ONE_PASSWORD }}
+          ANGEL_ONE_TOTP_SECRET=${{ secrets.ANGEL_ONE_TOTP_SECRET }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY=${{ secrets.NVIDIA_API_KEY }}
+          TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}
+          NEWSAPI_API_KEY=${{ secrets.NEWSAPI_API_KEY }}
+          SERPAPI_API_KEY=${{ secrets.SERPAPI_API_KEY }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          EOF
+
+      - name: Run trading cycle
+        run: python -c "
+          from src.utils.config import get_config
+          from src.utils.logger import setup_logging
+          setup_logging()
+          from src.agents.orchestrator import Orchestrator
+          o = Orchestrator(get_config())
+          result = o.run_cycle()
+          print('Cycle result:', result)
+          o.shutdown()
+          "
+
+      # Always save DB even if cycle fails — preserves trade records
+      - name: Save DB cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/trading_bot.db
+          key: trading-db-${{ runner.os }}-${{ github.run_id }}
+
+      # Upload DB as artifact for manual download / audit
+      - name: Upload DB artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trading-db-${{ github.run_number }}
+          path: data/trading_bot.db
+          retention-days: 7

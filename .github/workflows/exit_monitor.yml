@@ -1,0 +1,76 @@
+# =============================================================================
+# Exit Monitor — runs every 15 minutes during market hours
+# Checks stop-losses and trailing stops on open positions
+#
+# Market hours: 09:15–15:30 IST = 03:45–10:00 UTC
+# Cron fires every 15 min within that window, Mon–Fri
+# =============================================================================
+name: Exit Monitor
+
+on:
+  schedule:
+    # Every 15 min from 04:00–10:00 UTC (09:30–15:30 IST), Mon–Fri
+    - cron: "0,15,30,45 4,5,6,7,8,9 * * 1-5"
+    - cron: "0 10 * * 1-5"    # 15:30 IST — final exit check
+  workflow_dispatch:
+
+jobs:
+  exit-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore DB cache
+        uses: actions/cache@v4
+        with:
+          path: data/trading_bot.db
+          key: trading-db-${{ runner.os }}
+          restore-keys: trading-db-
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create .env
+        run: |
+          cat > .env << EOF
+          ANGEL_ONE_CLIENT_ID=${{ secrets.ANGEL_ONE_CLIENT_ID }}
+          ANGEL_ONE_API_KEY=${{ secrets.ANGEL_ONE_API_KEY }}
+          ANGEL_ONE_PASSWORD=${{ secrets.ANGEL_ONE_PASSWORD }}
+          ANGEL_ONE_TOTP_SECRET=${{ secrets.ANGEL_ONE_TOTP_SECRET }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY=${{ secrets.NVIDIA_API_KEY }}
+          TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }}
+          NEWSAPI_API_KEY=${{ secrets.NEWSAPI_API_KEY }}
+          SERPAPI_API_KEY=${{ secrets.SERPAPI_API_KEY }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          EOF
+
+      - name: Run exit check
+        run: python -c "
+          from src.utils.config import get_config
+          from src.utils.logger import setup_logging
+          setup_logging()
+          from src.agents.orchestrator import Orchestrator
+          o = Orchestrator(get_config())
+          result = o.run_exit_check_only()
+          print('Exit check result:', result)
+          o.shutdown()
+          "
+
+      - name: Save DB cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/trading_bot.db
+          key: trading-db-${{ runner.os }}-${{ github.run_id }}

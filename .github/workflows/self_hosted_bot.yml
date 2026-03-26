@@ -1,0 +1,66 @@
+# =============================================================================
+# SELF-HOSTED RUNNER WORKFLOW  ← USE THIS if you have a VPS
+#
+# This workflow runs ON YOUR OWN SERVER (not GitHub's machines).
+# The runner agent on your VPS picks up the job and executes it there.
+#
+# Benefits over GitHub-hosted runners:
+#   ✅ Persistent SQLite DB (it's just a file on your VPS)
+#   ✅ No minutes quota consumed
+#   ✅ Your .env lives on the server — no Secrets sync needed
+#   ✅ Reliable timing — no GitHub queue delay
+#   ✅ Runs full main.py with APScheduler (one-time start)
+#
+# Setup on your VPS:
+#   1. Go to: github.com/dhairyakataria/trading-bot → Settings → Actions → Runners
+#   2. Click "New self-hosted runner" → Linux → copy the token
+#   3. On VPS:
+#        mkdir actions-runner && cd actions-runner
+#        curl -o actions-runner-linux-x64-2.x.x.tar.gz -L <download_url>
+#        tar xzf ./actions-runner-linux-x64-2.x.x.tar.gz
+#        ./config.sh --url https://github.com/dhairyakataria/trading-bot --token <TOKEN>
+#        sudo ./svc.sh install && sudo ./svc.sh start
+#   4. Runner appears as "online" in GitHub Settings
+# =============================================================================
+name: Bot — Self-Hosted Runner
+
+on:
+  # Redeploy whenever you push to main (pull latest code + restart bot)
+  push:
+    branches: [main]
+  # Manual trigger from GitHub UI (useful for restarts)
+  workflow_dispatch:
+
+jobs:
+  deploy-and-run:
+    runs-on: self-hosted    # ← this is the magic line
+    timeout-minutes: 0      # no timeout — bot runs indefinitely
+
+    steps:
+      - name: Checkout latest code
+        uses: actions/checkout@v4
+
+      - name: Install / update dependencies
+        run: |
+          source .venv/bin/activate 2>/dev/null || python3 -m venv .venv && source .venv/bin/activate
+          pip install -r requirements.txt --quiet
+
+      - name: Stop existing bot instance (if running)
+        run: |
+          pkill -f "python.*main.py" || true
+          sleep 3
+
+      - name: Start trading bot in background
+        run: |
+          source .venv/bin/activate
+          nohup python main.py >> logs/trading_bot.log 2>&1 &
+          echo "Bot PID: $!"
+          echo $! > /tmp/trading_bot.pid
+          sleep 5
+          if ps -p $(cat /tmp/trading_bot.pid) > /dev/null; then
+            echo "✅ Bot started successfully (PID: $(cat /tmp/trading_bot.pid))"
+          else
+            echo "❌ Bot failed to start — check logs"
+            tail -50 logs/trading_bot.log
+            exit 1
+          fi
