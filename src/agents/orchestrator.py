@@ -136,16 +136,19 @@ class Orchestrator:
         self.budget_manager = BudgetManager(db=self.db)
         self.llm_router     = LLMRouter(self.config, self.budget_manager)
 
-        # Broker
+        # Broker — login in ALL modes (paper, approval, auto).
+        # Paper mode uses real market data from Angel One (prices, OHLCV,
+        # holdings info) — it only skips placing actual buy/sell orders.
         self.broker = AngelOneClient(self.config)
-        if not self._paper_trading:
-            try:
-                self.broker.login()
-                _log.info("Broker login successful.")
-            except Exception as exc:
-                _log.critical(
-                    "Broker login FAILED: %s — system will operate in degraded mode", exc
-                )
+        try:
+            self.broker.login()
+            _log.info("Broker login successful (mode=%s).", self._mode)
+        except Exception as exc:
+            _log.critical(
+                "Broker login FAILED: %s — system will operate in degraded mode "
+                "(technical analysis will use cached/fallback data)",
+                exc,
+            )
 
         # Tools
         self.tech_indicators = TechnicalIndicators()

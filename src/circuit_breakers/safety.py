@@ -10,8 +10,11 @@ Six independent breakers are evaluated on every call to
 5. SYSTEM_HEALTH          — DB connectivity check
 6. OUTSIDE_MARKET_HOURS   — only 9:15 AM – 3:30 PM IST on NSE trading days
 
-Paper-trading mode skips BROKER_CONNECTION, OUTSIDE_MARKET_HOURS, and
-MARKET_CRASH_DETECTOR so the system can be tested outside live sessions.
+Paper-trading mode:
+- BROKER_CONNECTION and MARKET_CRASH_DETECTOR still run (paper mode uses
+  real market data — Angel One is logged in for live prices/OHLCV).
+- OUTSIDE_MARKET_HOURS is skipped so the bot can be tested outside
+  live market sessions.
 """
 from __future__ import annotations
 
@@ -127,12 +130,15 @@ class CircuitBreaker:
         must_close = False
 
         # ── 1. Broker connection ─────────────────────────────────────────
-        if not self._paper_trading:
-            if not self._check_broker_connection():
-                tripped.append("BROKER_CONNECTION")
-                system_ok = False
+        # Runs in ALL modes — paper mode still uses Angel One for live
+        # market data (prices, OHLCV).
+        if not self._check_broker_connection():
+            tripped.append("BROKER_CONNECTION")
+            system_ok = False
 
         # ── 2. Outside market hours / holiday ───────────────────────────
+        # Skipped in paper mode so the bot can be tested outside live
+        # market sessions.
         if not self._paper_trading:
             hours_ok, hours_msg = self._check_market_hours()
             if not hours_ok:
@@ -140,8 +146,8 @@ class CircuitBreaker:
                 system_ok = False
                 _log.info("CircuitBreaker: OUTSIDE_MARKET_HOURS — %s", hours_msg)
 
-        # Only run P&L / market checks if the broker is reachable (or paper mode)
-        broker_reachable = system_ok or self._paper_trading
+        # Only run P&L / market checks if the broker is reachable
+        broker_reachable = system_ok
 
         if broker_reachable:
             # ── 3. Daily loss limit ─────────────────────────────────────
@@ -165,19 +171,20 @@ class CircuitBreaker:
                 )
 
             # ── 5. Market crash detector ────────────────────────────────
-            if not self._paper_trading:
-                crash_ok, change_pct, crash_msg = self._check_market_crash()
-                if not crash_ok:
-                    tripped.append("MARKET_CRASH_DETECTOR")
-                    can_open = False
-                    if change_pct is not None and abs(change_pct) >= self._CRASH_EXIT_PCT:
-                        must_close = True
-                        warnings.append(
-                            f"Nifty down {change_pct * 100:.1f}% — "
-                            "consider exiting risky positions"
-                        )
-                if crash_msg:
-                    warnings.append(crash_msg)
+            # Runs in ALL modes — paper mode uses real market data from
+            # Angel One, so Nifty crash detection remains active.
+            crash_ok, change_pct, crash_msg = self._check_market_crash()
+            if not crash_ok:
+                tripped.append("MARKET_CRASH_DETECTOR")
+                can_open = False
+                if change_pct is not None and abs(change_pct) >= self._CRASH_EXIT_PCT:
+                    must_close = True
+                    warnings.append(
+                        f"Nifty down {change_pct * 100:.1f}% — "
+                        "consider exiting risky positions"
+                    )
+            if crash_msg:
+                warnings.append(crash_msg)
 
         # ── 6. System health (DB) ────────────────────────────────────────
         health_ok, health_msg = self._check_system_health()
