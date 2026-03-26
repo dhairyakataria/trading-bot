@@ -75,6 +75,16 @@ class TradingScheduler:
             name="Pre-market routine (08:00)",
         )
 
+        # Data initialization buffer: 9:00 AM IST, Mon–Fri
+        # 15-minute buffer before market open for broker connectivity check,
+        # price pre-caching, and indicator warm-up
+        self._scheduler.add_job(
+            self._wrap(o.run_data_init, "run_data_init"),
+            CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone=_IST),
+            id="data_init",
+            name="Pre-market data init (09:00)",
+        )
+
         # Main trading cycle: every hour from 9:30 AM to 2:30 PM
         # fires at 9:30, 10:30, 11:30, 12:30, 13:30, 14:30
         self._scheduler.add_job(

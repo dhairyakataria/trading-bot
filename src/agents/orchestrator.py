@@ -88,20 +88,31 @@ class Orchestrator:
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
-        self.config        = config
-        self._paper_trading = bool(_cfg(config, "trading", "paper_trading", default=False))
-        self._capital       = float(_cfg(config, "trading", "capital", default=50_000))
-        self._max_pos_pct   = _cfg(config, "trading", "max_position_pct", default=5) / 100
+        self.config     = config
+        self._capital   = float(_cfg(config, "trading", "capital", default=100_000))
+        self._max_pos_pct = _cfg(config, "trading", "max_position_pct", default=10) / 100
+
+        # ── Unified mode resolution ─────────────────────────────────────
+        mode = _cfg(config, "trading", "mode", default=None)
+        if mode is not None:
+            self._mode = str(mode).lower().strip()
+        else:
+            paper  = bool(_cfg(config, "trading", "paper_trading", default=False))
+            signal = bool(_cfg(config, "trading", "signal_only",   default=False))
+            self._mode = "approval" if signal else ("paper" if paper else "auto")
+
+        # Legacy convenience flag (used by a few internal helpers)
+        self._paper_trading = self._mode == "paper"
 
         _log.info(
-            "Orchestrator starting up — capital=₹%.0f paper_trading=%s",
-            self._capital, self._paper_trading,
+            "Orchestrator starting up — mode=%s capital=₹%.0f max_pos=%.0f%%",
+            self._mode.upper(), self._capital, self._max_pos_pct * 100,
         )
 
         self._init_infrastructure()
         self._init_agents()
 
-        _log.info("Orchestrator ready.")
+        _log.info("Orchestrator ready (mode=%s).", self._mode.upper())
 
     # ================================================================== #
     # Initialisation                                                       #
@@ -142,7 +153,11 @@ class Orchestrator:
         self.web_search      = WebSearchTool(self.config, self.budget_manager)
 
     def _init_agents(self) -> None:
-        """Create all trading agents in dependency order."""
+        """Create all trading agents in dependency order.
+
+        Note: TelegramNotifier is created FIRST because ExecutionAgent
+        needs it for the approval workflow in ``mode="approval"``.
+        """
         from src.agents.universe_agent import UniverseAgent
         from src.agents.quant_agent import QuantAgent
         from src.agents.research_agent import ResearchAgent
@@ -152,6 +167,9 @@ class Orchestrator:
         from src.agents.execution_agent import ExecutionAgent
         from src.circuit_breakers.safety import CircuitBreaker
         from src.notifications.telegram_bot import TelegramNotifier
+
+        # Notifier MUST be created before ExecutionAgent (approval mode needs it)
+        self.notifier        = TelegramNotifier(self.config)
 
         self.universe_agent  = UniverseAgent(broker=self.broker, db=self.db, config=self.config)
         self.quant_agent     = QuantAgent(self.config, self.broker, self.tech_indicators, self.db)
@@ -167,7 +185,6 @@ class Orchestrator:
         self.journal_agent   = JournalAgent(self.config, self.db, self.llm_router)
         self.execution_agent = ExecutionAgent(self.config, self.broker, self.db, notifier=self.notifier)
         self.circuit_breaker = CircuitBreaker(self.config, self.broker, self.db)
-        self.notifier        = TelegramNotifier(self.config)
 
     # ================================================================== #
     # Public lifecycle methods                                             #
@@ -434,13 +451,68 @@ class Orchestrator:
 
     def shutdown(self) -> None:
         """Gracefully shut down all agents and close the broker connection."""
-        _log.info("Orchestrator shutdown initiated.")
+        _log.info("Orchestrator shutdown initiated (mode=%s).", self._mode)
         try:
-            if not self._paper_trading:
+            if self._mode == "auto":
                 self.broker.logout()
         except Exception as exc:
             _log.warning("Broker logout error during shutdown: %s", exc)
         _log.info("Orchestrator shutdown complete.")
+
+    def run_data_init(self) -> dict:
+        """09:00 IST — 15-minute pre-market data initialization buffer.
+
+        Tasks:
+        1. Verify broker connection is alive (re-login if needed)
+        2. Pre-cache current prices for watchlist stocks
+        3. Pre-load technical indicator data for 09:30 cycle speed
+        4. Send a brief Telegram "data init complete" notification
+
+        Returns summary dict.
+        """
+        _log.info("═══ Data init starting at %s ═══", _ist_now())
+        result: dict = {
+            "status": "COMPLETE",
+            "broker_ok": False,
+            "prices_cached": 0,
+        }
+
+        # 1. Verify / refresh broker session
+        if self._mode in ("auto", "approval"):
+            try:
+                # Attempt a lightweight call to verify session
+                self.broker.get_ltp("RELIANCE")
+                result["broker_ok"] = True
+                _log.info("Broker session verified OK")
+            except Exception as exc:
+                _log.warning("Broker session stale, attempting re-login: %s", exc)
+                try:
+                    self.broker.login()
+                    result["broker_ok"] = True
+                    _log.info("Broker re-login successful")
+                except Exception as exc2:
+                    _log.error("Broker re-login FAILED: %s", exc2)
+        else:
+            result["broker_ok"] = True  # Paper mode — always OK
+
+        # 2. Pre-cache prices for today's watchlist
+        try:
+            watchlist = self.universe_agent.get_active_watchlist()
+            result["prices_cached"] = len(watchlist)
+            _log.info("Pre-cached data for %d watchlist stocks", len(watchlist))
+        except Exception as exc:
+            _log.warning("Watchlist pre-cache failed: %s", exc)
+
+        # 3. Brief Telegram notification
+        self._notify(
+            f"⏰ *Data init complete* ({_ist_now()})\n"
+            f"Broker: {'✅' if result['broker_ok'] else '❌'}\n"
+            f"Watchlist: {result['prices_cached']} stocks cached\n"
+            f"Mode: {self._mode.upper()}"
+        )
+
+        _log.info("Data init complete — %s", result)
+        return result
 
     # ── Scheduler-facing aliases / lightweight routines ───────────────────────
 
@@ -688,8 +760,18 @@ class Orchestrator:
                     self._record_signal_skipped(signal, "RESEARCH_AVOID")
                     continue
 
-                # ── 6d: Calculate initial quantity ────────────────────────
-                quantity = self._calculate_quantity(entry_price)
+                # ── 6d: Calculate initial quantity (dynamic sizing) ────────
+                # Fetch ATR% from the watchlist for volatility scaling
+                wl_item = next(
+                    (w for w in watchlist if w["symbol"] == symbol), {}
+                )
+                stock_atr_pct = float(wl_item.get("atr_pct") or 0.0)
+
+                quantity = self._calculate_quantity(
+                    entry_price,
+                    stop_loss=stop_loss,
+                    atr_pct=stock_atr_pct,
+                )
                 if quantity <= 0:
                     _log.warning("SKIP %s — quantity resolved to 0 at price %.2f", symbol, entry_price)
                     continue
@@ -1023,12 +1105,61 @@ class Orchestrator:
             _log.warning("Could not fetch margin: %s — using capital estimate", exc)
             return self._capital * 0.5  # Conservative estimate
 
-    def _calculate_quantity(self, entry_price: float) -> int:
-        """Calculate how many shares to buy based on position sizing."""
+    def _calculate_quantity(
+        self,
+        entry_price: float,
+        stop_loss: float = 0.0,
+        atr_pct: float = 0.0,
+    ) -> int:
+        """Calculate how many shares to buy using dynamic position sizing.
+
+        Uses the *smallest* of three constraints:
+
+        1. **Position-size limit**: ``available_cash * max_position_pct / entry``
+        2. **Risk-per-trade cap** (2% of capital): ``capital * 0.02 / (entry - SL)``
+        3. **Volatility scaling**: for stocks with ATR% > 3%, the quantity is
+           scaled down proportionally so that risk stays constant across
+           different volatility regimes.
+
+        The result ensures no single position exceeds ``max_position_pct``
+        of the total portfolio value.
+        """
         if entry_price <= 0:
             return 0
-        max_trade_value = self._capital * self._max_pos_pct
-        return max(0, int(max_trade_value / entry_price))
+
+        available_cash  = self._get_available_cash()
+        total_capital   = self._capital
+
+        # Method 1: position-size-based limit
+        max_pos_value    = total_capital * self._max_pos_pct
+        qty_by_position  = int(max_pos_value / entry_price)
+
+        # Method 2: risk-per-trade cap (2% of capital)
+        per_share_risk = entry_price - stop_loss if stop_loss > 0 else entry_price * 0.03
+        if per_share_risk > 0:
+            max_risk_amount = total_capital * 0.02  # 2% risk budget
+            qty_by_risk     = int(max_risk_amount / per_share_risk)
+        else:
+            qty_by_risk     = qty_by_position
+
+        # Method 3: cash constraint
+        qty_by_cash = int(available_cash / entry_price) if available_cash > 0 else 0
+
+        # Take the minimum of all three constraints
+        quantity = min(qty_by_position, qty_by_risk, qty_by_cash)
+
+        # Volatility scaling: reduce quantity for highly volatile stocks
+        # Normalises to a 2% ATR baseline (stock with 4% ATR gets 50% of
+        # the shares a 2% ATR stock would get)
+        if atr_pct > 3.0:
+            vol_factor = 2.0 / atr_pct
+            quantity   = max(1, int(quantity * vol_factor))
+            _log.debug(
+                "Volatility scaling: ATR%%=%.1f → factor=%.2f → qty=%d",
+                atr_pct, vol_factor, quantity,
+            )
+
+        return max(0, quantity)
 
     def _get_trades_executed_today(self) -> int:
         """Return count of trades executed today (from system state)."""

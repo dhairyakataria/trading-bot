@@ -142,6 +142,8 @@ class Config:
         "stop_loss_pct",
     )
 
+    _VALID_MODES: frozenset[str] = frozenset({"paper", "approval", "auto"})
+
     def _validate(self) -> None:
         """Raise ConfigError if any required section or key is absent."""
         assert Config._config is not None  # set by _load before _validate
@@ -169,6 +171,50 @@ class Config:
             raise ConfigError(
                 f"'trading.capital' must be a positive number, got {capital!r}."
             )
+
+        # ── Mode resolution (with backward compatibility) ────────────────
+        self._resolve_trading_mode(trading)
+
+    def _resolve_trading_mode(self, trading: dict[str, Any]) -> None:
+        """Resolve the ``trading.mode`` field, supporting legacy flags.
+
+        If ``mode`` is explicitly set, validate it. Otherwise infer from
+        the deprecated ``paper_trading`` / ``signal_only`` booleans and
+        set ``mode`` so all downstream code can rely on a single field.
+        """
+        import logging
+        _cfg_log = logging.getLogger("config")
+
+        mode = trading.get("mode")
+
+        if mode is not None:
+            mode = str(mode).lower().strip()
+            if mode not in self._VALID_MODES:
+                raise ConfigError(
+                    f"'trading.mode' must be one of {sorted(self._VALID_MODES)}, "
+                    f"got {mode!r}."
+                )
+            trading["mode"] = mode
+            return
+
+        # ── Legacy fallback ──────────────────────────────────────────────
+        paper  = trading.get("paper_trading", False)
+        signal = trading.get("signal_only", False)
+
+        if signal:
+            inferred = "approval"
+        elif paper:
+            inferred = "paper"
+        else:
+            inferred = "auto"
+
+        _cfg_log.warning(
+            "DEPRECATED: 'trading.paper_trading' / 'trading.signal_only' are "
+            "deprecated. Please set 'trading.mode: \"%s\"' instead. "
+            "Inferred mode='%s' from legacy flags.",
+            inferred, inferred,
+        )
+        trading["mode"] = inferred
 
     # ------------------------------------------------------------------ #
     # Public accessors                                                     #

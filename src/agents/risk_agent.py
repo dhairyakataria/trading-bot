@@ -485,19 +485,39 @@ class RiskManager:
     # ------------------------------------------------------------------ #
 
     def calculate_position_size(
-        self, symbol: str, entry_price: float, stop_loss: float
+        self,
+        symbol: str,
+        entry_price: float,
+        stop_loss: float,
+        atr_pct: float = 0.0,
+        available_cash: float = 0.0,
     ) -> dict:
-        """Calculate recommended position size using a risk-per-trade model.
+        """Calculate recommended position size using dynamic risk-based sizing.
 
-        Uses the *smaller* of:
-        1. Shares purchasable with the max risk-per-trade budget (2% of capital).
-        2. Shares purchasable within the max position-size limit.
+        Uses the *smallest* of three constraints:
+
+        1. **Risk-per-trade** (2% of capital): ``capital * 0.02 / (entry − SL)``
+        2. **Position-size limit** (10% of portfolio): ``capital * max_pos_pct / entry``
+        3. **Cash constraint**: ``available_cash / entry_price``
+
+        Additionally, if ``atr_pct > 3.0%`` (high volatility), the quantity
+        is scaled down proportionally so that per-trade risk stays constant
+        across different volatility regimes.
+
+        Parameters
+        ----------
+        symbol:       Stock ticker.
+        entry_price:  Proposed entry price.
+        stop_loss:    Stop-loss price.
+        atr_pct:      14-day ATR as a percentage of price (optional; 0 = no scaling).
+        available_cash: Current available cash (optional; 0 = use capital estimate).
 
         Returns
         -------
         dict with keys:
             recommended_quantity, investment_amount, investment_pct,
-            risk_amount, risk_pct  (and optional ``error`` key on failure)
+            risk_amount, risk_pct, volatility_adjusted
+            (and optional ``error`` key on failure)
         """
         per_share_risk = entry_price - stop_loss
         if per_share_risk <= 0:
@@ -507,6 +527,7 @@ class RiskManager:
                 "investment_pct":       0.0,
                 "risk_amount":          0.0,
                 "risk_pct":             0.0,
+                "volatility_adjusted":  False,
                 "error": "stop_loss must be strictly below entry_price",
             }
 
@@ -520,7 +541,21 @@ class RiskManager:
         max_position_value = total_capital * self._max_position_pct
         qty_by_position = int(max_position_value / entry_price) if entry_price > 0 else 0
 
-        recommended_qty = min(qty_by_risk, qty_by_position)
+        # Method 3: cash constraint
+        if available_cash > 0:
+            qty_by_cash = int(available_cash / entry_price) if entry_price > 0 else 0
+        else:
+            qty_by_cash = qty_by_position  # No cash constraint provided
+
+        recommended_qty = min(qty_by_risk, qty_by_position, qty_by_cash)
+
+        # Volatility scaling: reduce qty for highly volatile stocks
+        # Normalises to a 2% ATR baseline
+        volatility_adjusted = False
+        if atr_pct > 3.0:
+            vol_factor = 2.0 / atr_pct
+            recommended_qty = max(1, int(recommended_qty * vol_factor))
+            volatility_adjusted = True
 
         investment_amount = recommended_qty * entry_price
         investment_pct    = (investment_amount / total_capital * 100) if total_capital else 0.0
@@ -528,8 +563,9 @@ class RiskManager:
         risk_pct          = (risk_amount / total_capital * 100) if total_capital else 0.0
 
         _log.debug(
-            "Position size %s: qty_risk=%d, qty_position=%d → recommended=%d",
-            symbol, qty_by_risk, qty_by_position, recommended_qty,
+            "Position size %s: qty_risk=%d, qty_pos=%d, qty_cash=%d, vol_adj=%s → recommended=%d",
+            symbol, qty_by_risk, qty_by_position, qty_by_cash,
+            volatility_adjusted, recommended_qty,
         )
 
         return {
@@ -538,6 +574,7 @@ class RiskManager:
             "investment_pct":       round(investment_pct, 2),
             "risk_amount":          round(risk_amount, 2),
             "risk_pct":             round(risk_pct, 2),
+            "volatility_adjusted":  volatility_adjusted,
         }
 
     # ------------------------------------------------------------------ #

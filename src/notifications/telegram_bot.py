@@ -1,10 +1,21 @@
-"""Telegram Bot — sends trade alerts and daily reports via Telegram."""
+"""Telegram Bot — sends trade alerts, daily reports, and interactive approvals.
+
+Supports three interaction patterns:
+
+1. **Send-only** (paper / auto modes): Fire-and-forget alerts, no reply expected.
+2. **Interactive approval** (approval mode): Sends a message with inline
+   Yes / No buttons and blocks until the user taps one or the timeout expires.
+3. **Reports**: Formatted morning briefings, EOD summaries, weekly reviews.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
+import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict, Optional
 
 _log = logging.getLogger("notifications.telegram")
 
@@ -434,3 +445,218 @@ class TelegramNotifier:
 
         lines.append("-----------------------------------------")
         return self._send("\n".join(lines))
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Interactive Approval Flow (Route 2: Human-in-the-Loop)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def send_approval_request(
+        self,
+        symbol: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss: float,
+        target: float,
+        strategy: str = "",
+        sector: str = "",
+        timeout_seconds: int = 300,
+    ) -> str:
+        """Send a trade approval request with inline Yes/No buttons.
+
+        Blocks the calling thread until the user taps a button or the
+        timeout expires.
+
+        Args:
+            symbol:          Stock ticker (e.g. ``"RELIANCE"``).
+            quantity:        Number of shares.
+            entry_price:     Proposed limit price.
+            stop_loss:       Stop-loss price.
+            target:          First target price.
+            strategy:        Strategy name (optional).
+            sector:          Sector (optional).
+            timeout_seconds: Max seconds to wait for a reply (default 300 = 5 min).
+
+        Returns:
+            ``"approved"``, ``"rejected"``, or ``"timeout"``.
+        """
+        if not self._enabled:
+            _log.warning("Telegram not enabled — auto-rejecting approval for %s", symbol)
+            return "timeout"
+
+        sl_pct  = ((entry_price - stop_loss) / entry_price) * 100
+        tgt_pct = ((target - entry_price) / entry_price) * 100
+        cost    = quantity * entry_price
+        risk    = entry_price - stop_loss
+        reward  = target - entry_price
+        rr      = f"1 : {reward / risk:.2f}" if risk > 0 else "N/A"
+
+        lines = [
+            f"🔔 *TRADE APPROVAL REQUIRED*",
+            "----------------------------",
+            f"Stock:      {symbol}",
+            f"Action:     BUY",
+            f"Qty:        {quantity} shares",
+            f"Entry:      ₹{entry_price:,.2f}",
+            f"Stop-Loss:  ₹{stop_loss:,.2f}  (−{sl_pct:.2f}%)",
+            f"Target:     ₹{target:,.2f}  (+{tgt_pct:.2f}%)",
+            f"R:R Ratio:  {rr}",
+            f"Cost:       ₹{cost:,.2f}",
+        ]
+        if strategy:
+            lines.append(f"Strategy:   {strategy}")
+        if sector:
+            lines.append(f"Sector:     {sector}")
+        lines.append("")
+        lines.append(f"⏳ Respond within {timeout_seconds // 60} min or trade is skipped.")
+
+        text = "\n".join(lines)
+
+        # Generate a unique callback ID so concurrent approvals don't collide
+        request_id = uuid.uuid4().hex[:8]
+        approve_data = f"approve_{request_id}"
+        reject_data  = f"reject_{request_id}"
+
+        try:
+            result = asyncio.run(
+                self._async_send_approval(
+                    text, approve_data, reject_data, timeout_seconds
+                )
+            )
+            return result
+        except Exception as exc:
+            _log.error("Approval request failed for %s: %s — defaulting to timeout", symbol, exc)
+            return "timeout"
+
+    async def _async_send_approval(
+        self,
+        text: str,
+        approve_data: str,
+        reject_data: str,
+        timeout_seconds: int,
+    ) -> str:
+        """Send message with inline keyboard and poll for callback response."""
+        from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram.error import TelegramError
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=approve_data),
+                InlineKeyboardButton("❌ Reject",  callback_data=reject_data),
+            ]
+        ])
+
+        async with Bot(token=self._bot_token) as bot:
+            # Send the approval message
+            sent_msg = await bot.send_message(
+                chat_id=self._chat_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+
+            # Poll for callback query updates until timeout
+            deadline    = time.monotonic() + timeout_seconds
+            last_update = 0
+
+            while time.monotonic() < deadline:
+                try:
+                    updates = await bot.get_updates(
+                        offset=last_update + 1,
+                        timeout=min(10, max(1, int(deadline - time.monotonic()))),
+                        allowed_updates=["callback_query"],
+                    )
+                except TelegramError as exc:
+                    _log.warning("Polling error during approval wait: %s", exc)
+                    await asyncio.sleep(2)
+                    continue
+
+                for update in updates:
+                    last_update = update.update_id
+                    cb = update.callback_query
+                    if cb is None:
+                        continue
+                    if cb.data == approve_data:
+                        await cb.answer(text="✅ Trade approved!")
+                        await bot.edit_message_text(
+                            chat_id=self._chat_id,
+                            message_id=sent_msg.message_id,
+                            text=text + "\n\n✅ *APPROVED* by user",
+                            parse_mode="Markdown",
+                        )
+                        return "approved"
+                    elif cb.data == reject_data:
+                        await cb.answer(text="❌ Trade rejected.")
+                        await bot.edit_message_text(
+                            chat_id=self._chat_id,
+                            message_id=sent_msg.message_id,
+                            text=text + "\n\n❌ *REJECTED* by user",
+                            parse_mode="Markdown",
+                        )
+                        return "rejected"
+
+            # Timeout — edit message to show expiry
+            try:
+                await bot.edit_message_text(
+                    chat_id=self._chat_id,
+                    message_id=sent_msg.message_id,
+                    text=text + "\n\n⏰ *TIMED OUT* — trade skipped",
+                    parse_mode="Markdown",
+                )
+            except TelegramError:
+                pass
+
+            return "timeout"
+
+    def send_approval_exit_request(
+        self,
+        symbol: str,
+        quantity: int,
+        exit_type: str,
+        current_price: float,
+        entry_price: float = 0.0,
+        pnl: float = 0.0,
+        timeout_seconds: int = 300,
+    ) -> str:
+        """Send an EXIT approval request with inline Yes/No buttons.
+
+        Same mechanics as :meth:`send_approval_request` but for exits.
+
+        Returns:
+            ``"approved"``, ``"rejected"``, or ``"timeout"``.
+        """
+        if not self._enabled:
+            _log.warning("Telegram not enabled — auto-approving exit for %s", symbol)
+            return "approved"  # Exits default to approved for safety
+
+        sign = "+" if pnl >= 0 else ""
+        pnl_pct = (pnl / (entry_price * quantity) * 100) if entry_price > 0 and quantity > 0 else 0.0
+
+        lines = [
+            f"🔔 *EXIT APPROVAL REQUIRED*",
+            "----------------------------",
+            f"Stock:      {symbol}",
+            f"Action:     SELL ({exit_type})",
+            f"Qty:        {quantity} shares",
+            f"Price:      ₹{current_price:,.2f}",
+        ]
+        if entry_price > 0:
+            lines.append(f"Entry:      ₹{entry_price:,.2f}")
+        if pnl != 0.0:
+            lines.append(f"Est. P&L:   {sign}₹{pnl:,.2f} ({sign}{pnl_pct:.2f}%)")
+        lines.append("")
+        lines.append(f"⏳ Respond within {timeout_seconds // 60} min or exit is *AUTO-EXECUTED*.")
+        lines.append("(Exits auto-execute on timeout for safety)")
+
+        text = "\n".join(lines)
+        request_id   = uuid.uuid4().hex[:8]
+        approve_data = f"approve_{request_id}"
+        reject_data  = f"reject_{request_id}"
+
+        try:
+            result = asyncio.run(
+                self._async_send_approval(text, approve_data, reject_data, timeout_seconds)
+            )
+            return result
+        except Exception as exc:
+            _log.error("Exit approval failed for %s: %s — auto-approving for safety", symbol, exc)
+            return "approved"

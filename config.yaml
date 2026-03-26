@@ -22,10 +22,34 @@ broker:
 # -----------------------------------------------------------------------------
 trading:
   # Total capital allocated to the bot (INR)
-  capital: 50000
+  capital: 100000
 
-  # Maximum size of a single position as % of capital
-  max_position_pct: 5
+  # ───────────────────────────────────────────────────────────────────────
+  # Operational mode — controls how the bot executes trades
+  # ───────────────────────────────────────────────────────────────────────
+  #   "paper"    — Route 1: Simulation mode. All signals are executed using
+  #                real-time data but NO live orders are placed. A virtual
+  #                ledger (DB + Excel) tracks buy/sell, entry/exit, and P&L.
+  #                Weekly and monthly performance reports are generated.
+  #
+  #   "approval" — Route 2: Human-in-the-loop. When a signal fires, the
+  #                bot sends a Telegram message ("Buy 50 RELIANCE at ₹2,500?")
+  #                with Approve / Reject buttons. The trade is executed ONLY
+  #                if approved within the timeout window.
+  #
+  #   "auto"     — Route 3: Fully automated. The bot identifies, calculates,
+  #                and executes trades autonomously. A daily EOD summary
+  #                listing all trades and realized/unrealized P&L is sent
+  #                via Telegram.
+  # ───────────────────────────────────────────────────────────────────────
+  mode: "paper"
+
+  # Timeout (seconds) to wait for Telegram approval in "approval" mode.
+  # If no response within this window, the trade is SKIPPED.
+  approval_timeout_seconds: 300
+
+  # Maximum size of a single position as % of total portfolio value
+  max_position_pct: 10
 
   # Maximum allowable loss in a single day as % of capital
   max_daily_loss_pct: 2
@@ -34,7 +58,7 @@ trading:
   max_weekly_loss_pct: 5
 
   # Maximum number of concurrent open positions
-  max_open_positions: 5
+  max_open_positions: 15
 
   # Default stop-loss distance as % below entry price
   stop_loss_pct: 3
@@ -50,14 +74,9 @@ trading:
   trading_start_time: "09:30"
   trading_end_time: "15:15"
 
-  # Paper-trading mode — set to true to disable live order placement
+  # Legacy compatibility flags (DEPRECATED — use 'mode' instead)
+  # These are IGNORED when 'mode' is present. Kept only for migration.
   paper_trading: true
-
-  # Signal-only mode — when true, no orders are placed on Angel One.
-  # Instead, trade signals (symbol, qty, entry, SL, target) are sent to
-  # your Telegram bot so you can act on them manually.
-  # Works independently of paper_trading: you can use signal_only even in
-  # live mode to get advisory alerts without any automated order placement.
   signal_only: false
 
 # -----------------------------------------------------------------------------
@@ -165,6 +184,10 @@ universe:
 schedule:
   # Pre-market tasks: news pull, universe refresh
   pre_market: "08:00"
+
+  # Data initialization buffer: broker connectivity check, price pre-caching,
+  # indicator warm-up. Runs 15 min before market open.
+  data_init: "09:00"
 
   # How often (minutes) to run the intra-day scan during market hours
   scan_interval_minutes: 60

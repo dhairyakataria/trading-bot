@@ -1,12 +1,15 @@
 # =============================================================================
 # Pre-Market Routine — runs at 08:00 IST (02:30 UTC) Mon–Fri
 # Tasks: universe refresh, morning briefing, Telegram pre-market summary
+#
+# Data init runs at 09:00 IST (03:30 UTC) — broker check + price caching
 # =============================================================================
 name: Pre-Market Routine
 
 on:
   schedule:
-    - cron: "30 2 * * 1-5"   # 02:30 UTC = 08:00 IST, Mon–Fri
+    - cron: "30 2 * * 1-5"   # 02:30 UTC = 08:00 IST — morning routine
+    - cron: "30 3 * * 1-5"   # 03:30 UTC = 09:00 IST — data init buffer
   workflow_dispatch:           # allow manual trigger from GitHub UI
 
 jobs:
@@ -56,16 +59,24 @@ jobs:
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           EOF
 
-      # ── 6. Run pre-market routine ──────────────────────────────────────
-      - name: Run pre-market routine
-        run: python -c "
+      # ── 6. Run appropriate routine based on UTC hour ────────────────────
+      - name: Run pre-market or data-init routine
+        run: |
+          python -c "
+          from datetime import datetime, timezone
           from src.utils.config import get_config
           from src.utils.logger import setup_logging
           setup_logging()
           from src.agents.orchestrator import Orchestrator
           o = Orchestrator(get_config())
-          result = o.run_pre_market()
-          print('Pre-market result:', result)
+          utc_hour = datetime.now(timezone.utc).hour
+          if utc_hour >= 3:
+              print('Running data init (09:00 IST)...')
+              result = o.run_data_init()
+          else:
+              print('Running pre-market (08:00 IST)...')
+              result = o.run_pre_market()
+          print('Result:', result)
           o.shutdown()
           "
 

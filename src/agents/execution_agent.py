@@ -92,18 +92,34 @@ class ExecutionAgent:
         self.db       = db_manager
         self.notifier = notifier  # TelegramNotifier — optional but strongly recommended
 
-        self._paper_trading = bool(_cfg(config, "trading", "paper_trading", default=False))
-        self._signal_only   = bool(_cfg(config, "trading", "signal_only",   default=False))
-
-        if self._signal_only:
-            _log.info(
-                "ExecutionAgent initialised in SIGNAL-ONLY mode "
-                "(no orders will be placed — Telegram signals only)"
-            )
-        elif self._paper_trading:
-            _log.info("ExecutionAgent initialised in PAPER-TRADING mode (no live orders)")
+        # ── Unified mode resolution ─────────────────────────────────────
+        # Prefer the new `trading.mode` field; fall back to legacy booleans
+        mode = _cfg(config, "trading", "mode", default=None)
+        if mode is not None:
+            self._mode = str(mode).lower().strip()
         else:
-            _log.info("ExecutionAgent initialised in LIVE mode")
+            # Legacy backward compatibility
+            paper  = bool(_cfg(config, "trading", "paper_trading", default=False))
+            signal = bool(_cfg(config, "trading", "signal_only",   default=False))
+            if signal:
+                self._mode = "approval"
+            elif paper:
+                self._mode = "paper"
+            else:
+                self._mode = "auto"
+
+        # Convenience flags derived from mode (used in order placement logic)
+        self._paper_trading = self._mode == "paper"
+        self._signal_only   = self._mode == "approval"
+
+        self._approval_timeout = int(
+            _cfg(config, "trading", "approval_timeout_seconds", default=300)
+        )
+
+        _log.info(
+            "ExecutionAgent initialised in %s mode",
+            self._mode.upper(),
+        )
 
     # ================================================================== #
     # BUY                                                                  #
@@ -196,44 +212,82 @@ class ExecutionAgent:
             self._paper_trading, self._signal_only,
         )
 
-        # ── 3a. Signal-only mode — send Telegram signal, skip order ─────
-        if self._signal_only:
+        # ── 3a. APPROVAL mode — send Telegram approval request and wait ──
+        if self._mode == "approval":
             target_1 = float(signal.get("target_1", 0.0))
-            reasoning = str(signal.get("reasoning", signal.get("reason", "")))
-            if self.notifier is not None:
+            effective_target = target_1 if target_1 > 0 else entry_price * 1.06
+
+            if self.notifier is not None and hasattr(self.notifier, "send_approval_request"):
                 try:
-                    self.notifier.send_signal_alert(
+                    decision = self.notifier.send_approval_request(
                         symbol=symbol,
                         quantity=quantity,
                         entry_price=entry_price,
                         stop_loss=stop_loss,
-                        target=target_1 if target_1 > 0 else entry_price * 1.06,
+                        target=effective_target,
                         strategy=strategy,
-                        reasoning=reasoning,
                         sector=sector,
+                        timeout_seconds=self._approval_timeout,
+                    )
+                    _log.info(
+                        "Approval decision for %s: %s", symbol, decision,
                     )
                 except Exception as exc:
-                    _log.error("signal_only: failed to send buy signal for %s: %s", symbol, exc)
+                    _log.error(
+                        "approval: Telegram request failed for %s: %s — skipping trade",
+                        symbol, exc,
+                    )
+                    decision = "timeout"
             else:
                 _log.warning(
-                    "signal_only BUY signal for %s — no notifier configured, "
-                    "signal not sent",
+                    "approval mode: no notifier with approval capability for %s — "
+                    "falling back to signal-only alert",
                     symbol,
                 )
-            trade_id = self._record_trade(
-                symbol=symbol, quantity=quantity, price=entry_price,
-                order_id=None, status="SIGNAL_SENT",
-                stop_loss=stop_loss, target_price=target_1,
-                strategy_signal=signal,
-            )
+                # Fallback: send a regular signal alert and skip execution
+                if self.notifier is not None:
+                    try:
+                        reasoning = str(signal.get("reasoning", signal.get("reason", "")))
+                        self.notifier.send_signal_alert(
+                            symbol=symbol, quantity=quantity,
+                            entry_price=entry_price, stop_loss=stop_loss,
+                            target=effective_target, strategy=strategy,
+                            reasoning=reasoning, sector=sector,
+                        )
+                    except Exception:
+                        pass
+                decision = "timeout"
+
+            if decision == "rejected":
+                _trade_log.info(
+                    "REJECTED_BY_USER BUY | %s | qty=%d | entry=%.2f",
+                    symbol, quantity, entry_price,
+                )
+                trade_id = self._record_trade(
+                    symbol=symbol, quantity=quantity, price=entry_price,
+                    order_id=None, status="REJECTED_BY_USER",
+                    stop_loss=stop_loss, target_price=target_1,
+                    strategy_signal=signal,
+                )
+                return self._buy_result(symbol, quantity, False, error="Rejected by user")
+
+            if decision == "timeout":
+                _trade_log.info(
+                    "APPROVAL_TIMEOUT BUY | %s | qty=%d | entry=%.2f",
+                    symbol, quantity, entry_price,
+                )
+                trade_id = self._record_trade(
+                    symbol=symbol, quantity=quantity, price=entry_price,
+                    order_id=None, status="APPROVAL_TIMEOUT",
+                    stop_loss=stop_loss, target_price=target_1,
+                    strategy_signal=signal,
+                )
+                return self._buy_result(symbol, quantity, False, error="Approval timed out")
+
+            # decision == "approved" → fall through to live order placement below
             _trade_log.info(
-                "SIGNAL_SENT BUY | %s | trade_id=%s | qty=%d | entry=%.2f | sl=%.2f | strategy=%s",
-                symbol, trade_id, quantity, entry_price, stop_loss, strategy,
-            )
-            return self._buy_result(
-                symbol, quantity, True,
-                filled_price=entry_price,
-                trade_id=trade_id,
+                "APPROVED_BY_USER BUY | %s | qty=%d | entry=%.2f | proceeding to execute",
+                symbol, quantity, entry_price,
             )
 
         # ── 4. Place order ───────────────────────────────────────────────
