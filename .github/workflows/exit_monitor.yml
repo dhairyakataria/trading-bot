@@ -36,6 +36,12 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
+      # Install system packages required by lxml / newspaper3k
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libxml2-dev libxslt-dev libjpeg-dev libpng-dev
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -57,7 +63,8 @@ jobs:
           EOF
 
       - name: Run exit check
-        run: python -c "
+        run: |
+          python -c "
           from src.utils.config import get_config
           from src.utils.logger import setup_logging
           setup_logging()
