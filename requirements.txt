@@ -20,7 +20,7 @@ python-dotenv>=1.0.1
 # -----------------------------------------------------------------------------
 pandas>=2.1.0
 numpy>=1.26.0
-pandas-ta>=0.3.14b    # Pure-Python TA library (no TA-Lib C dependency)
+# pandas-ta removed — code uses built-in numpy/pandas fallbacks for all indicators
 yfinance>=0.2.40      # Global index / fallback OHLCV data
 
 # -----------------------------------------------------------------------------
@@ -48,9 +48,9 @@ chromadb>=0.5.0
 # -----------------------------------------------------------------------------
 requests>=2.32.0
 beautifulsoup4>=4.12.0
-newspaper3k>=0.2.8
-lxml>=5.2.0           # Fast HTML parser used by bs4 and newspaper3k
-lxml-html-clean>=0.1.0  # lxml.html.clean was split into a separate package (required by newspaper3k)
+newspaper4k>=0.9.3    # maintained fork of newspaper3k, Python 3.11+ compatible (same import path)
+lxml>=5.2.0           # Fast HTML parser used by bs4 and newspaper4k
+lxml-html-clean>=0.1.0  # lxml.html.clean was split into a separate package (required by newspaper4k)
 feedparser>=6.0.0     # RSS/Atom feed parsing (Google News, MoneyControl)
 ddgs>=0.3.0               # Free web search, no API key needed (package was renamed from duckduckgo-search)
 
@@ -74,11 +74,6 @@ apscheduler>=3.10.0
 # Reporting (paper-trading Excel reports)
 # -----------------------------------------------------------------------------
 openpyxl>=3.1.0
-
-# -----------------------------------------------------------------------------
-# Backtesting
-# -----------------------------------------------------------------------------
-backtrader>=1.9.78.123
 
 # -----------------------------------------------------------------------------
 # Testing

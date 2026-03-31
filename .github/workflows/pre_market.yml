@@ -3,6 +3,8 @@
 # Tasks: universe refresh, morning briefing, Telegram pre-market summary
 #
 # Data init runs at 09:00 IST (03:30 UTC) — broker check + price caching
+#
+# IST = UTC + 5:30  |  India has NO daylight saving — offset is constant
 # =============================================================================
 name: Pre-Market Routine
 
@@ -63,33 +65,64 @@ jobs:
           SERPAPI_API_KEY=${{ secrets.SERPAPI_API_KEY }}
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          LOG_LEVEL=DEBUG
           EOF
 
-      # ── 6. Run appropriate routine based on UTC hour ────────────────────
-      - name: Run pre-market or data-init routine
+      # ── 6. Show current time in UTC and IST (for schedule verification) ─
+      - name: Show current time (UTC and IST)
         run: |
           python -c "
-          from datetime import datetime, timezone
+          from datetime import datetime, timezone, timedelta
+          utc_now = datetime.now(timezone.utc)
+          ist_now = utc_now + timedelta(hours=5, minutes=30)
+          print('=' * 50)
+          print(f'UTC  : {utc_now.strftime(\"%Y-%m-%d %H:%M:%S %Z\")}')
+          print(f'IST  : {ist_now.strftime(\"%Y-%m-%d %H:%M:%S IST\")}')
+          print(f'Day  : {ist_now.strftime(\"%A\")}')
+          print('=' * 50)
+          "
+
+      # ── 7. Run appropriate routine based on UTC hour ────────────────────
+      - name: Run pre-market or data-init routine
+        run: |
+          mkdir -p logs
+          python -c "
+          from datetime import datetime, timezone, timedelta
           from src.utils.config import get_config
           from src.utils.logger import setup_logging
           setup_logging()
           from src.agents.orchestrator import Orchestrator
+
+          utc_now = datetime.now(timezone.utc)
+          ist_now = utc_now + timedelta(hours=5, minutes=30)
+          print(f'[PRE-MARKET] Starting at IST {ist_now.strftime(\"%H:%M:%S\")} on {ist_now.strftime(\"%A %d-%b-%Y\")}')
+
           o = Orchestrator(get_config())
-          utc_hour = datetime.now(timezone.utc).hour
+          utc_hour = utc_now.hour
           if utc_hour >= 3:
-              print('Running data init (09:00 IST)...')
+              print('[PRE-MARKET] Running data init (09:00 IST)...')
               result = o.run_data_init()
           else:
-              print('Running pre-market (08:00 IST)...')
+              print('[PRE-MARKET] Running morning routine (08:00 IST)...')
               result = o.run_pre_market()
-          print('Result:', result)
+          print('[PRE-MARKET] Result:', result)
           o.shutdown()
-          "
+          print('[PRE-MARKET] Done.')
+          " 2>&1 | tee logs/pre_market_${{ github.run_id }}.log
 
-      # ── 7. Save updated DB back to cache ──────────────────────────────
+      # ── 8. Save updated DB back to cache ──────────────────────────────
       - name: Save DB cache
         uses: actions/cache/save@v4
         if: always()
         with:
           path: data/trading_bot.db
           key: trading-db-${{ runner.os }}-${{ github.run_id }}
+
+      # ── 9. Upload logs as artifact (always, even on failure) ──────────
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pre-market-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7

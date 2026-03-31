@@ -2,6 +2,7 @@
 # Exit Monitor — runs every 15 minutes during market hours
 # Checks stop-losses and trailing stops on open positions
 #
+# IST = UTC + 5:30  |  India has NO daylight saving — offset is constant
 # Market hours: 09:15–15:30 IST = 03:45–10:00 UTC
 # Cron fires every 15 min within that window, Mon–Fri
 # =============================================================================
@@ -60,20 +61,43 @@ jobs:
           SERPAPI_API_KEY=${{ secrets.SERPAPI_API_KEY }}
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          LOG_LEVEL=DEBUG
           EOF
+
+      # Show current time in UTC and IST (confirms cron fired at the right time)
+      - name: Show current time (UTC and IST)
+        run: |
+          python -c "
+          from datetime import datetime, timezone, timedelta
+          utc_now = datetime.now(timezone.utc)
+          ist_now = utc_now + timedelta(hours=5, minutes=30)
+          print('=' * 50)
+          print(f'UTC  : {utc_now.strftime(\"%Y-%m-%d %H:%M:%S %Z\")}')
+          print(f'IST  : {ist_now.strftime(\"%Y-%m-%d %H:%M:%S IST\")}')
+          print(f'Day  : {ist_now.strftime(\"%A\")}')
+          print('=' * 50)
+          "
 
       - name: Run exit check
         run: |
+          mkdir -p logs
           python -c "
+          from datetime import datetime, timezone, timedelta
           from src.utils.config import get_config
           from src.utils.logger import setup_logging
           setup_logging()
           from src.agents.orchestrator import Orchestrator
+
+          utc_now = datetime.now(timezone.utc)
+          ist_now = utc_now + timedelta(hours=5, minutes=30)
+          print(f'[EXIT MONITOR] Starting at IST {ist_now.strftime(\"%H:%M:%S\")} on {ist_now.strftime(\"%A %d-%b-%Y\")}')
+
           o = Orchestrator(get_config())
           result = o.run_exit_check_only()
-          print('Exit check result:', result)
+          print('[EXIT MONITOR] Result:', result)
           o.shutdown()
-          "
+          print('[EXIT MONITOR] Done.')
+          " 2>&1 | tee logs/exit_monitor_${{ github.run_id }}.log
 
       - name: Save DB cache
         uses: actions/cache/save@v4
@@ -81,3 +105,12 @@ jobs:
         with:
           path: data/trading_bot.db
           key: trading-db-${{ runner.os }}-${{ github.run_id }}
+
+      # Upload logs for monitoring (skip on success to save storage — only keep failures)
+      - name: Upload logs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: exit-monitor-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 3

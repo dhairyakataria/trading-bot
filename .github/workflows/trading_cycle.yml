@@ -1,7 +1,7 @@
 # =============================================================================
 # Main Trading Cycle — runs every hour during NSE market hours (IST)
 #
-# IST → UTC conversion (IST = UTC + 5:30):
+# IST → UTC conversion (IST = UTC + 5:30, no DST in India):
 #   09:30 IST = 04:00 UTC
 #   10:30 IST = 05:00 UTC
 #   11:30 IST = 06:00 UTC
@@ -70,20 +70,43 @@ jobs:
           SERPAPI_API_KEY=${{ secrets.SERPAPI_API_KEY }}
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          LOG_LEVEL=DEBUG
           EOF
+
+      # Show current time in UTC and IST (confirms cron fired at the right time)
+      - name: Show current time (UTC and IST)
+        run: |
+          python -c "
+          from datetime import datetime, timezone, timedelta
+          utc_now = datetime.now(timezone.utc)
+          ist_now = utc_now + timedelta(hours=5, minutes=30)
+          print('=' * 50)
+          print(f'UTC  : {utc_now.strftime(\"%Y-%m-%d %H:%M:%S %Z\")}')
+          print(f'IST  : {ist_now.strftime(\"%Y-%m-%d %H:%M:%S IST\")}')
+          print(f'Day  : {ist_now.strftime(\"%A\")}')
+          print('=' * 50)
+          "
 
       - name: Run trading cycle
         run: |
+          mkdir -p logs
           python -c "
+          from datetime import datetime, timezone, timedelta
           from src.utils.config import get_config
           from src.utils.logger import setup_logging
           setup_logging()
           from src.agents.orchestrator import Orchestrator
+
+          utc_now = datetime.now(timezone.utc)
+          ist_now = utc_now + timedelta(hours=5, minutes=30)
+          print(f'[TRADING CYCLE] Starting at IST {ist_now.strftime(\"%H:%M:%S\")} on {ist_now.strftime(\"%A %d-%b-%Y\")}')
+
           o = Orchestrator(get_config())
           result = o.run_cycle()
-          print('Cycle result:', result)
+          print('[TRADING CYCLE] Result:', result)
           o.shutdown()
-          "
+          print('[TRADING CYCLE] Done.')
+          " 2>&1 | tee logs/trading_cycle_${{ github.run_id }}.log
 
       # Always save DB even if cycle fails — preserves trade records
       - name: Save DB cache
@@ -100,4 +123,13 @@ jobs:
         with:
           name: trading-db-${{ github.run_number }}
           path: data/trading_bot.db
+          retention-days: 7
+
+      # Upload logs for monitoring
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trading-cycle-logs-${{ github.run_number }}
+          path: logs/
           retention-days: 7
