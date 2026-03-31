@@ -194,11 +194,14 @@ class AngelOneClient:
             :class:`BrokerAuthError`: on any failure.
         """
         try:
-            from SmartApi import SmartConnect  # type: ignore[import]
-        except ImportError as exc:
-            raise BrokerAuthError(
-                "smartapi-python not installed. Run: pip install smartapi-python"
-            ) from exc
+            from SmartApi import SmartConnect  # type: ignore[import]  # v1.3.x
+        except ImportError:
+            try:
+                from smartapi import SmartConnect  # type: ignore[import]  # v1.5.x
+            except ImportError as exc:
+                raise BrokerAuthError(
+                    "smartapi-python not installed. Run: pip install smartapi-python"
+                ) from exc
 
         # Generate TOTP — never logged
         totp_code = pyotp.TOTP(self._totp_secret).now()
