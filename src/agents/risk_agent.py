@@ -68,8 +68,7 @@ class RiskManager:
         Database manager (``DatabaseManager`` or compatible mock).
     """
 
-    # Hard-coded safety constants — never configurable at runtime
-    _MAX_STOP_LOSS_PCT: float = 0.05   # stop loss must be within 5% of entry
+    # Safety constants — some now configurable via config.trading.*
     _MIN_RR_RATIO: float = 1.5         # minimum reward-to-risk ratio
     _MAX_SECTOR_POSITIONS: int = 2     # max stocks from one sector
     _MIN_TRADE_VALUE: float = 1_000.0  # minimum order value (INR)
@@ -90,6 +89,11 @@ class RiskManager:
         self._max_daily_loss_pct: float = _cfg("trading", "max_daily_loss_pct", default=2) / 100
         self._max_weekly_loss_pct: float = _cfg("trading", "max_weekly_loss_pct", default=5) / 100
         self._max_open_positions: int = int(_cfg("trading", "max_open_positions", default=5))
+        # Cap for stop-loss distance (as fraction). Allows ATR-based SLs that often
+        # exceed 5% for volatile names. Override via trading.max_stop_loss_pct.
+        self._MAX_STOP_LOSS_PCT: float = _cfg("trading", "max_stop_loss_pct", default=8) / 100
+        # Paper-trading mode: skip live broker calls; use configured capital.
+        self._paper_trading: bool = bool(_cfg("trading", "paper_trading", default=False))
 
     # ------------------------------------------------------------------ #
     # Main entry point                                                     #
@@ -753,6 +757,8 @@ class RiskManager:
 
     def _get_total_capital(self) -> float:
         """Return total portfolio value from broker, or fall back to config capital."""
+        if self._paper_trading:
+            return self._capital
         try:
             pv = self.broker.get_portfolio_value()
             total = pv.get("total_value")
@@ -768,36 +774,60 @@ class RiskManager:
         total_portfolio_value = self._capital
         unrealized_pnl       = 0.0
 
-        # --- Broker: portfolio value ---
-        try:
-            pv = self.broker.get_portfolio_value()
-            total_portfolio_value = float(pv.get("total_value")  or self._capital)
-            available_cash        = float(pv.get("available_cash") or self._capital)
-            invested_amount       = float(pv.get("invested")       or 0.0)
-        except Exception as exc:
-            _log.debug("Could not fetch portfolio value: %s", exc)
-
-        # --- Broker: holdings (with fallback to DB open trades) ---
-        try:
-            raw_holdings = self.broker.get_holdings()
-            for h in raw_holdings:
-                unrealized_pnl += float(h.get("pnl") or 0.0)
-            holdings = self._enrich_holdings_with_sector(raw_holdings)
-        except Exception as exc:
-            _log.debug("Could not fetch broker holdings: %s", exc)
+        if self._paper_trading:
+            # Paper mode: the real broker account is irrelevant. Build portfolio
+            # state from DB open trades + configured capital so risk checks use
+            # the simulated capital (e.g. ₹1,00,000) rather than the real cash.
             try:
                 open_trades = self.db.get_open_trades()
                 for t in open_trades:
+                    qty   = int(getattr(t, "quantity", 0) or 0)
+                    price = float(getattr(t, "price", 0.0) or 0.0)
+                    invested_amount += qty * price
                     holdings.append({
                         "symbol":    t.symbol,
-                        "quantity":  t.quantity,
-                        "avg_price": t.price,
-                        "ltp":       t.price,
+                        "quantity":  qty,
+                        "avg_price": price,
+                        "ltp":       price,
                         "pnl":       0.0,
                         "sector":    "UNKNOWN",
                     })
-            except Exception as exc2:
-                _log.debug("Could not fetch open trades from DB: %s", exc2)
+            except Exception as exc:
+                _log.debug("Paper mode: could not fetch open trades from DB: %s", exc)
+            holdings = self._enrich_holdings_with_sector(holdings) if holdings else holdings
+            available_cash = max(0.0, self._capital - invested_amount)
+            total_portfolio_value = self._capital  # mark-to-market ≈ capital w/ ltp=price
+        else:
+            # --- Broker: portfolio value ---
+            try:
+                pv = self.broker.get_portfolio_value()
+                total_portfolio_value = float(pv.get("total_value")  or self._capital)
+                available_cash        = float(pv.get("available_cash") or self._capital)
+                invested_amount       = float(pv.get("invested")       or 0.0)
+            except Exception as exc:
+                _log.debug("Could not fetch portfolio value: %s", exc)
+
+            # --- Broker: holdings (with fallback to DB open trades) ---
+            try:
+                raw_holdings = self.broker.get_holdings()
+                for h in raw_holdings:
+                    unrealized_pnl += float(h.get("pnl") or 0.0)
+                holdings = self._enrich_holdings_with_sector(raw_holdings)
+            except Exception as exc:
+                _log.debug("Could not fetch broker holdings: %s", exc)
+                try:
+                    open_trades = self.db.get_open_trades()
+                    for t in open_trades:
+                        holdings.append({
+                            "symbol":    t.symbol,
+                            "quantity":  t.quantity,
+                            "avg_price": t.price,
+                            "ltp":       t.price,
+                            "pnl":       0.0,
+                            "sector":    "UNKNOWN",
+                        })
+                except Exception as exc2:
+                    _log.debug("Could not fetch open trades from DB: %s", exc2)
 
         # --- DB: today's realized PnL ---
         today_realized_pnl = 0.0

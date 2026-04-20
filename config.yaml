@@ -63,6 +63,11 @@ trading:
   # Default stop-loss distance as % below entry price
   stop_loss_pct: 3
 
+  # Hard cap on stop-loss distance allowed by the risk manager (% below entry).
+  # ATR-based signals on volatile names can produce SLs > 5%; this prevents
+  # the risk manager from rejecting every such trade.
+  max_stop_loss_pct: 8
+
   # Price filters for stock selection (INR)
   min_stock_price: 50
   max_stock_price: 5000

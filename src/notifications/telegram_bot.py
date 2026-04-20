@@ -65,7 +65,7 @@ class TelegramNotifier:
     async def _async_send(self, text: str, parse_mode: str = "Markdown") -> None:
         """Async send — wraps python-telegram-bot Bot.send_message."""
         from telegram import Bot
-        from telegram.error import RetryAfter, TelegramError
+        from telegram.error import BadRequest, RetryAfter, TelegramError
 
         async with Bot(token=self._bot_token) as bot:
             try:
@@ -84,7 +84,19 @@ class TelegramNotifier:
                     text=text,
                     parse_mode=parse_mode,
                 )
-            except TelegramError as exc:
+            except BadRequest as exc:
+                # Malformed markdown (unbalanced *, _, [, etc.) — resend as plain text
+                # so notifications are never lost due to formatting bugs.
+                if "parse entities" in str(exc).lower() or "can't parse" in str(exc).lower():
+                    _log.warning("Telegram parse error — resending as plain text: %s", exc)
+                    await bot.send_message(
+                        chat_id=self._chat_id,
+                        text=text,
+                        parse_mode=None,
+                    )
+                else:
+                    raise
+            except TelegramError:
                 raise  # Re-raise for the sync wrapper to catch and log
 
     def _send(self, text: str, parse_mode: str = "Markdown") -> bool:

@@ -148,6 +148,8 @@ class AngelOneClient:
 
         # Rate limiter: max 10 calls / second
         self._rate_limiter = _RateLimiter(rate=10, period=1.0)
+        # Historical endpoint has a stricter 3 req/sec limit (Angel One docs).
+        self._historical_rate_limiter = _RateLimiter(rate=3, period=1.0)
 
         # Instrument / token caches (populated from master on first use)
         self._symbol_to_token: Dict[str, str] = {}   # "TCS"    → "11536"
@@ -311,6 +313,29 @@ class AngelOneClient:
             try:
                 resp = fn(*args, **kwargs)
             except Exception as exc:
+                # Angel One's historical endpoint often returns a raw text
+                # "Access denied because of exceeding access rate" which the
+                # SDK wraps in a JSON-parse DataException. Treat these as
+                # rate-limits and retry with exponential backoff.
+                msg = str(exc).lower()
+                if (
+                    "exceeding access rate" in msg
+                    or "access denied" in msg
+                    or "too many requests" in msg
+                    or "rate" in msg and "limit" in msg
+                ):
+                    last_exc = RateLimitError(
+                        f"{context}: rate limit (SDK exception: {exc})"
+                    )
+                    if attempt < self._API_MAX_RETRIES:
+                        logger.warning(
+                            "%s: rate limited (SDK exc) — retry %d/%d in %.1fs",
+                            context, attempt, self._API_MAX_RETRIES, wait,
+                        )
+                        time.sleep(wait)
+                        wait *= 2.0
+                        continue
+                    raise last_exc from exc
                 raise BrokerAPIError(
                     f"{context}: SDK raised {type(exc).__name__}: {exc}"
                 ) from exc
@@ -474,6 +499,8 @@ class AngelOneClient:
                 "get_historical_data: %s %s %s → %s",
                 symbol, interval, chunk_from, chunk_to,
             )
+            # Extra throttle for the stricter historical endpoint (3/s).
+            self._historical_rate_limiter.acquire()
             resp = self._call_api(
                 self._smart.getCandleData,
                 params,
