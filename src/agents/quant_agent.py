@@ -7,6 +7,7 @@ five swing-trading strategies.  Pure Python/maths — zero LLM calls.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
@@ -91,6 +92,8 @@ class QuantAgent:
                         seen_buy.add(symbol)
             except Exception as exc:
                 _log.error("Unexpected error analysing %s: %s", symbol, exc)
+            # Throttle API calls to avoid Angel One rate limits (max ~3 req/s)
+            time.sleep(0.4)
 
         _log.info(
             "Scan complete — %d actionable signal(s) from %d stock(s)",

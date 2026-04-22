@@ -93,7 +93,10 @@ class RiskManager:
         # exceed 5% for volatile names. Override via trading.max_stop_loss_pct.
         self._MAX_STOP_LOSS_PCT: float = _cfg("trading", "max_stop_loss_pct", default=8) / 100
         # Paper-trading mode: skip live broker calls; use configured capital.
-        self._paper_trading: bool = bool(_cfg("trading", "paper_trading", default=False))
+        # Check both the new 'mode' field and the legacy 'paper_trading' flag.
+        _mode = str(_cfg("trading", "mode", default="") or "").lower()
+        _legacy_paper = bool(_cfg("trading", "paper_trading", default=False))
+        self._paper_trading: bool = (_mode == "paper") or _legacy_paper
 
     # ------------------------------------------------------------------ #
     # Main entry point                                                     #

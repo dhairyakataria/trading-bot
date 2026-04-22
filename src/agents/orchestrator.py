@@ -558,7 +558,7 @@ class Orchestrator:
         """Reset daily budget and trade counters — called at midnight by the scheduler."""
         _log.info("Resetting daily state at %s", _ist_now())
         try:
-            self.budget_manager.reset_daily_budgets()
+            self.budget_manager.reset_daily()
         except Exception as exc:
             _log.warning("Budget reset failed: %s", exc)
         try:

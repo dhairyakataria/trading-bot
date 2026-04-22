@@ -285,16 +285,18 @@ class LLMRouter:
             raise
 
     def _call_gemini_flash(self, prompt: str, system_prompt: str) -> str:
-        return self._call_gemini("gemini-2.0-flash", prompt, system_prompt)
+        model = self._config.get("llm", "gemini", "model", default="gemini-1.5-flash")
+        return self._call_gemini(model, prompt, system_prompt)
 
     def _call_gemini_pro(self, prompt: str, system_prompt: str) -> str:
-        return self._call_gemini("gemini-2.5-pro", prompt, system_prompt)
+        model = self._config.get("llm", "gemini", "model", default="gemini-1.5-flash")
+        return self._call_gemini(model, prompt, system_prompt)
 
     def _call_gemini_with_tools(
         self, provider: str, prompt: str, system_prompt: str, tools: list[Any]
     ) -> dict[str, Any]:
         from google.genai import types  # type: ignore[import-untyped]
-        model_name = "gemini-2.0-flash" if provider == "gemini_flash" else "gemini-2.5-pro"
+        model_name = self._config.get("llm", "gemini", "model", default="gemini-1.5-flash")
         client = self._get_gemini_client()
         try:
             cfg = types.GenerateContentConfig(
@@ -351,7 +353,7 @@ class LLMRouter:
             messages.append({"role": "user", "content": prompt})
 
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=self._config.get("llm", "groq", "model", default="llama-3.1-70b-versatile"),
                 messages=messages,
                 timeout=_CALL_TIMEOUT,
             )
@@ -377,7 +379,7 @@ class LLMRouter:
             messages.append({"role": "user", "content": prompt})
 
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=self._config.get("llm", "groq", "model", default="llama-3.1-70b-versatile"),
                 messages=messages,
                 tools=tools,
                 tool_choice="auto",
